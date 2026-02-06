@@ -1,0 +1,74 @@
+name: Compile Typst files to PDF
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name for the release (e.g. v1.0.0)'
+        required: true
+
+jobs:
+  compile-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Typst
+        run: |
+          curl -fsSL https://github.com/typst/typst/releases/latest/download/typst-x86_64-unknown-linux-musl.tar.xz -o typst.tar.xz
+          tar -xf typst.tar.xz
+          mv typst-*/typst /usr/local/bin/
+          typst --version
+
+      - name: Compile all .typ files to PDF
+        run: |
+          set -e
+          mkdir -p output
+          count=0
+          for file in $(find notes -name "*.typ" -type f); do
+            filename=$(basename "$file" .typ)
+            echo "Compiling $file..."
+            typst compile "$file" "output/${filename}.pdf"
+            count=$((count + 1))
+          done
+
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No .typ files found in notes/"
+            exit 1
+          fi
+
+          echo "Compiled $count file(s)"
+          ls -lh output/
+
+      - name: Create Release and Upload PDFs
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "Release $TAG" \
+              --notes "Compiled notes from version $TAG"
+          fi
+
+          for pdf in output/*.pdf; do
+            echo "Uploading $(basename "$pdf")..."
+            gh release upload "$TAG" "$pdf" --clobber
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
